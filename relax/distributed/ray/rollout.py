@@ -4838,6 +4838,8 @@ def compute_metrics_from_samples(
     rollout_id: int | None = None,
     include_rloo_diagnostics: bool = True,
 ):
+    if not samples:
+        return {}
     rewarded_samples = [sample for sample in samples if sample.reward is not None]
     reward_cat_key = args.log_reward_category
     reward_category_samples = (
@@ -4869,7 +4871,9 @@ def compute_metrics_from_samples(
     log_dict |= compute_num_turn_metrics(samples)
     log_dict |= compute_stop_reason_metrics(samples)
     if rollout_id is not None and args.partial_rollout and not args.fully_async:
-        staleness_gaps = [rollout_id - sample.metadata.get("start_rollout_id", rollout_id) for sample in samples]
+        staleness_gaps = [
+            rollout_id - (sample.metadata or {}).get("start_rollout_id", rollout_id) for sample in samples
+        ]
         log_dict["staleness/avg"] = np.mean(staleness_gaps).item()
         log_dict["staleness/max"] = np.max(staleness_gaps).item()
         log_dict["staleness/min"] = np.min(staleness_gaps).item()
