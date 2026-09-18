@@ -111,6 +111,81 @@ def finalize_rollout_explicit_metric_values(metric_values: dict[str, list[float]
     return log_dict
 
 
+def compute_num_turn_metrics(samples: list[Sample]) -> dict[str, float]:
+    """Pure aggregation of per-sample rollout turn counts.
+
+    Reads ``sample.metadata["rollout_turns"]``; samples without the key count
+    as the historical default of 1, so ``num_turn/mean|max|min`` keep the exact
+    semantics of the previous inline computation in ``compute_metrics_from_samples``.
+    The added tail percentiles (``np.percentile``, default linear interpolation)
+    surface long-tail agentic trajectories.
+
+    Returns {} for empty input; reads only the samples it is given.
+    """
+    if not samples:
+        return {}
+    turns = [sample.metadata.get("rollout_turns", 1) for sample in samples]
+    return {
+        "num_turn/mean": np.mean(turns).item(),
+        "num_turn/max": np.max(turns).item(),
+        "num_turn/min": np.min(turns).item(),
+        "num_turn/p50": np.percentile(turns, 50).item(),
+        "num_turn/p90": np.percentile(turns, 90).item(),
+        "num_turn/p95": np.percentile(turns, 95).item(),
+        "num_turn/p99": np.percentile(turns, 99).item(),
+    }
+
+
+def compute_stop_reason_metrics(samples: list[Sample]) -> dict[str, float]:
+    """Pure aggregation of the stop-reason distribution over rollout samples.
+
+    Each sample lands in exactly one bucket (see ``_resolve_rollout_stop_reason``:
+    explicit ``rollout_stop_reason`` metadata first, then ``sample.status``, then
+    ``unknown``), so the emitted ``stop_reason/{reason}/frac`` values sum to 1
+    over the whole batch. Counts are reported alongside for small-batch debugging.
+
+    Keys embed the raw reason strings (e.g. ``stop_reason/max_turns/count``).
+    Relax ships explicit metric dicts with no key-substring-based reduction, so
+    reasons containing "max"/"min" are safe here, unlike aggregators that infer
+    the reduction from key names.
+
+    Returns {} for empty input; reads only the samples it is given.
+    """
+    if not samples:
+        return {}
+    counts: dict[str, int] = {}
+    for sample in samples:
+        reason = _resolve_rollout_stop_reason(sample)
+        counts[reason] = counts.get(reason, 0) + 1
+    total = len(samples)
+    metrics: dict[str, float] = {}
+    for reason in sorted(counts):
+        count = counts[reason]
+        metrics[f"stop_reason/{reason}/count"] = count
+        metrics[f"stop_reason/{reason}/frac"] = count / total
+    return metrics
+
+
+def _resolve_rollout_stop_reason(sample: Sample) -> str:
+    """Resolve the stop-reason bucket for one sample (first hit wins).
+
+    1. ``metadata["rollout_stop_reason"]`` when it is a non-empty string,
+       normalized with ``strip().lower()``; e.g. the DeepEyes rollout writes
+       ``max_turns`` / ``env_done`` / ``budget_exhausted``.
+    2. ``sample.status`` (the ``Sample.Status`` enum value, already lowercase).
+    3. ``"unknown"`` as the explicit fallback for samples without a status.
+    """
+    reason = sample.metadata.get("rollout_stop_reason")
+    if isinstance(reason, str) and reason.strip():
+        return reason.strip().lower()
+    status = getattr(sample, "status", None)
+    if isinstance(status, Sample.Status):
+        return status.value
+    if isinstance(status, str) and status.strip():
+        return status.strip().lower()
+    return "unknown"
+
+
 def _compute_rloo_group_diagnostics(args, samples: list[Sample]) -> dict[str, float]:
     """Compute leave-one-out diagnostics from training rollout samples.
 
